@@ -20,10 +20,12 @@ type args struct {
 	OutFile         string
 }
 
+const defaultDTPattern = `\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`
+
 func main() {
 	var args args
 	flag.IntVar(&args.TxSize, "tx", 1000, "specify size of the tx.")
-	flag.StringVar(&args.DatetimePattern, "dt", `\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`, "specify datetime regex pattern to use. The pattern is used to split log entries.")
+	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime regex pattern to use. The pattern is used to split log entries.")
 
 	flag.Parse()
 
@@ -57,7 +59,18 @@ func main() {
 		log.Fatalf("failed to open input file: %q", err)
 	}
 
-	scanner := bufio.NewScanner(infile)
+	br := bufio.NewReader(infile)
+	r, _, err := br.ReadRune()
+	if err != nil {
+		log.Fatalf("failed to read file: %q", err)
+	}
+
+	// utf8 BOM check
+	if r != '\uFEFF' {
+		br.UnreadRune()
+	}
+
+	scanner := bufio.NewScanner(br)
 	pat, err := regexp.Compile(args.DatetimePattern)
 	if err != nil {
 		log.Fatalf("invalid datatime format: %q", err)
@@ -103,6 +116,10 @@ func main() {
 	}
 
 	tx.Commit()
+
+	if scanner.Err() != nil {
+		log.Fatalf("%q: %d", scanner.Err(), len(scanner.Text()))
+	}
 }
 
 func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
@@ -143,7 +160,7 @@ func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
 			}
 		} else {
 			// read more
-			return 0, nil, fmt.Errorf("unexpected start of entry: %s", data) 
+			return 0, nil, fmt.Errorf("unexpected start of entry: %s,%v", data, loc)
 		}
 	}
 }

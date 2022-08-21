@@ -21,7 +21,7 @@ Info CBS    SQM: Initializing online with Windows opt-in: False
 Info CBS    SQM: Cleaning up report files older than 10 days.
 `))
 
-	pat := regexp.MustCompile(`\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`)
+	pat := regexp.MustCompile(defaultDTPattern)
 	sc.Split(logEntrySplitter(pat))
 
 	var entries []string
