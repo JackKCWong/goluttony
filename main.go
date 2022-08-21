@@ -130,6 +130,7 @@ func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
 				return 0, nil, fmt.Errorf("unexpected EOF: buffer=%s", data)
 			}
 
+			log.Printf("read more 1: %d", len(data))
 			return 0, nil, nil
 		}
 
@@ -143,6 +144,7 @@ func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
 			// first line
 			loc = dtPattern.FindIndex(data[1:]) // find next entry start
 			if loc == nil {
+				log.Printf("read more 2: %d", len(data))
 				return 0, nil, nil
 			}
 
@@ -156,6 +158,7 @@ func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
 					data[0 : loc[0]-1], // don't return \n at the end
 					nil
 			} else {
+				log.Printf("read more 3: %d", len(data))
 				return 0, nil, nil
 			}
 		} else {
