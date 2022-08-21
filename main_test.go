@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-func TestLogSplit(t *testing.T) {
-	sc := bufio.NewScanner(strings.NewReader(`2016-09-28 04:30:30, Info CBS    Starting TrustedInstaller initialization.
+const text = `2016-09-28 04:30:30, Info CBS    Starting TrustedInstaller initialization.
 2016-09-28 04:30:30, Info CBS    Loaded Servicing Stack v6.1.7601.23505 with Core: 
 C:\Windows\winsxs\amd64_microsoft-windows-servicingstack_31bf3856ad364e35_6.1.7601.23505_none_681aa442f6fed7f0\cbscore.dll
 2016-09-28 04:30:31, Info CSI    00000001@2016/9/27:20:30:31.455 WcpInitialize (wcp.dll version 0.0.0.6) called (stack @0x7fed806eb5d @0x7fef9fb9b6d @0x7fef9f8358f @0xff83e97c @0xff83d799 @0xff83db2f)
@@ -119,8 +118,10 @@ CSIPERF:TXCOMMIT;26151
 2017-04-09 14:41:50, Info                  CBS    Failed to get next element [HRESULT = 0x800f080d - CBS_E_MANIFEST_INVALID_ITEM]
 2017-04-09 14:41:50, Info                  CBS    Warning: Unrecognized packageExtended attribute.
 2017-04-09 14:41:50, Info                  CBS    Expecting attribute name [HRESULT = 0x800f080d - CBS_E_MANIFEST_INVALID_ITEM]
-2017-04-09 14:41:50, Info                  CBS    Failed to get next element [HRESULT = 0x800f080d - CBS_E_MANIFEST_INVALID_ITEM]
-`))
+2017-04-09 14:41:50, Info                  CBS    Failed to get next element [HRESULT = 0x800f080d - CBS_E_MANIFEST_INVALID_ITEM]`
+
+func TestLogSplit(t *testing.T) {
+	sc := bufio.NewScanner(strings.NewReader(text))
 
 	pat := regexp.MustCompile(defaultDTPattern)
 	sc.Split(logEntrySplitter(pat))
@@ -145,5 +146,23 @@ Info CBS    TrustedInstaller service starts successfully.
 Info CBS    SQM: Initializing online with Windows opt-in: False
 Info CBS    SQM: Cleaning up report files older than 10 days.` {
 		t.Fatalf("was %s", entries[0])
+	}
+}
+
+func TestCanReadLogEntriesByStartPattern(t *testing.T) {
+	entriesOut := readEntries(bufio.NewReader(strings.NewReader(text)), regexp.MustCompile(defaultDTPattern), 100)
+
+	entries := []string{}
+	
+	for e := range entriesOut {
+		entries = append(entries, e)
+	}
+
+	if len(entries) != 106 {
+		t.Fatalf("expecting 106 rows but was: %d", len(entries))
+	}
+
+	if entries[105] != `2017-04-09 14:41:50, Info                  CBS    Failed to get next element [HRESULT = 0x800f080d - CBS_E_MANIFEST_INVALID_ITEM]` {
+		t.Fatalf("unexpected: %s", entries[105])
 	}
 }

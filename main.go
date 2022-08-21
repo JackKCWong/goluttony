@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"regexp"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -40,12 +42,17 @@ func main() {
 
 	defer db.Close()
 
+	// createTable := `
+	// 	create virtual table if not exists logs using fts5(
+	// 		entry,
+	// 		prefix=3,
+	// 		tokenize = "unicode61 tokenchars '-_.'"
+	// 	);
+	// `
+
 	createTable := `
-		create virtual table if not exists logs using fts5(
-			datetime,
-			entry,
-			prefix=3,
-			tokenize = "unicode61 tokenchars '-_.'"
+		create table if not exists logs (
+			entry TEXT NOT NULL
 		);
 	`
 
@@ -70,33 +77,24 @@ func main() {
 		br.UnreadRune()
 	}
 
-	scanner := bufio.NewScanner(br)
 	pat, err := regexp.Compile(args.DatetimePattern)
 	if err != nil {
 		log.Fatalf("invalid datatime format: %q", err)
 	}
-	scanner.Split(logEntrySplitter(pat))
-	// scanner.Buffer(make([]byte, 0, 1000*1000*1000), 1000*1000*1000)
-	cnt := 0
+
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatalf("failed to begin: %q", err)
 	}
 
-	stmt, err := tx.Prepare(`insert into logs values (?, ?)`)
+	stmt, err := tx.Prepare(`insert into logs values (?)`)
 	if err != nil {
 		log.Fatalf("failed to prepare stmt: %q", err)
 	}
 
-	for scanner.Scan() {
-		cnt++
-		entry := scanner.Text()
-		if len(entry) < 19 {
-			log.Printf("skip short line: %s", entry)
-			continue
-		}
-
-		_, err = stmt.Exec(entry[:19], entry)
+	var cnt = 0
+	for entry := range readEntries(br, pat, args.TxSize + 1) {
+		_, err = stmt.Exec(entry)
 		if err != nil {
 			log.Fatalf("failed to insert: %q", err)
 		}
@@ -108,7 +106,7 @@ func main() {
 				log.Fatalf("failed to begin: %q", err)
 			}
 
-			stmt, err = tx.Prepare(`insert into logs values (?, ?)`)
+			stmt, err = tx.Prepare(`insert into logs values (?)`)
 			if err != nil {
 				log.Fatalf("failed to prepare stmt: %q", err)
 			}
@@ -116,10 +114,83 @@ func main() {
 	}
 
 	tx.Commit()
+}
 
-	if scanner.Err() != nil {
-		log.Fatalf("%q: %d", scanner.Err(), len(scanner.Text()))
+func readFullLine(in *bufio.Reader) (string, error) {
+	var sb *strings.Builder
+	line, prefix, err := in.ReadLine()
+
+	if err != nil {
+		return "", err
 	}
+
+	if !prefix {
+		return string(line), nil
+	}
+
+	sb = new(strings.Builder)
+	sb.Write(line)
+	for prefix {
+		line, prefix, err = in.ReadLine()
+		if err != nil {
+			return "", err
+		}
+		sb.Write(line)
+	}
+
+	return sb.String(), nil
+}
+
+func readEntries(br *bufio.Reader, pat *regexp.Regexp, bufsize int) chan string {
+	out := make(chan string, bufsize)
+	go func() {
+		defer close(out)
+		var entry strings.Builder
+
+		line, err := readFullLine(br)
+		if line == "" {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+		}
+
+		entry.WriteString(line)
+
+	outer:
+		for {
+			loc := pat.FindStringIndex(entry.String())
+			if loc == nil || loc[0] != 0 {
+				log.Fatalf("unexpected starting line: %s", entry.String())
+			}
+
+			for {
+				line, err = readFullLine(br)
+				if err == io.EOF {
+					out <- entry.String()
+					break outer
+				}
+
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				loc = pat.FindStringIndex(line)
+				if loc == nil || loc[0] != 0 {
+					entry.WriteByte('\n')
+					entry.WriteString(line)
+				} else {
+					// a new entry start
+					out <- entry.String()
+					entry.Reset()
+					entry.WriteString(line)
+					break
+				}
+			}
+		}
+
+	}()
+
+	return out
 }
 
 func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
