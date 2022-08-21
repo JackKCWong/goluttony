@@ -40,7 +40,7 @@ func main() {
 
 	createTable := `
 		create virtual table if not exists logs using fts5(
-			time UNINDEXED,
+			datetime,
 			entry,
 			prefix=3,
 			tokenize = "unicode61 tokenchars '-_.'"
