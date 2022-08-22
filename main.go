@@ -19,7 +19,7 @@ import (
 type args struct {
 	TxSize          int
 	DatetimePattern string
-	Profile         bool
+	Profile         string
 	InFile          string
 	OutFile         string
 }
@@ -30,16 +30,19 @@ func main() {
 	var args args
 	flag.IntVar(&args.TxSize, "tx", 1000, "specify size of the tx.")
 	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime regex pattern to use. The pattern is used to split log entries.")
-	flag.BoolVar(&args.Profile, "prof", false, "enable profiling")
+	flag.StringVar(&args.Profile, "prof", "", "enable either cpu|mem profiling")
 
 	flag.Parse()
 
-	if args.Profile {
-		defer profile.Start(
-			profile.MemProfile,
-			profile.CPUProfile,
-			profile.ProfilePath(".")).
-			Stop()
+	switch args.Profile {
+	case "cpu":
+		defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
+	case "mem":
+		defer profile.Start(profile.MemProfile, profile.ProfilePath(".")).Stop()
+	case "":
+		// do nothing
+	default:
+		log.Fatalf("-prof must be one of cpu|mem, but was %s.", args.Profile)
 	}
 
 	args.InFile = flag.Arg(0)
