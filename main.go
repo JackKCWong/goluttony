@@ -13,11 +13,13 @@ import (
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pkg/profile"
 )
 
 type args struct {
 	TxSize          int
 	DatetimePattern string
+	Profile         bool
 	InFile          string
 	OutFile         string
 }
@@ -28,8 +30,17 @@ func main() {
 	var args args
 	flag.IntVar(&args.TxSize, "tx", 1000, "specify size of the tx.")
 	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime regex pattern to use. The pattern is used to split log entries.")
+	flag.BoolVar(&args.Profile, "prof", false, "enable profiling")
 
 	flag.Parse()
+
+	if args.Profile {
+		defer profile.Start(
+			profile.MemProfile,
+			profile.CPUProfile,
+			profile.ProfilePath(".")).
+			Stop()
+	}
 
 	args.InFile = flag.Arg(0)
 	args.OutFile = flag.Arg(1)
@@ -42,17 +53,10 @@ func main() {
 
 	defer db.Close()
 
-	// createTable := `
-	// 	create virtual table if not exists logs using fts5(
-	// 		entry,
-	// 		prefix=3,
-	// 		tokenize = "unicode61 tokenchars '-_.'"
-	// 	);
-	// `
-
 	createTable := `
-		create table if not exists logs (
-			entry TEXT NOT NULL
+		create virtual table if not exists logs using fts5(
+			entry,
+			tokenize = "unicode61 tokenchars '-_.'"
 		);
 	`
 
@@ -93,7 +97,7 @@ func main() {
 	}
 
 	var cnt = 0
-	for entry := range readEntries(br, pat, args.TxSize + 1) {
+	for entry := range readEntries(br, pat, args.TxSize+1) {
 		_, err = stmt.Exec(entry)
 		if err != nil {
 			log.Fatalf("failed to insert: %q", err)
