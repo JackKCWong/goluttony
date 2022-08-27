@@ -49,7 +49,7 @@ func main() {
 	args.OutFile = flag.Arg(1)
 
 	db, err := sql.Open("sqlite3",
-		args.OutFile+"?_journal=OFF&_locking=EXCLUSIVE&_sync=OFF")
+		args.OutFile+"?_journal=OFF")
 	if err != nil {
 		log.Fatalf("failed to open db: %q", err)
 	}
@@ -94,29 +94,40 @@ func main() {
 		log.Fatalf("failed to begin: %q", err)
 	}
 
-	stmt, err := tx.Prepare(`insert into logs values (?)`)
+	stmt, err := db.Prepare(`insert into logs values (?)`)
 	if err != nil {
 		log.Fatalf("failed to prepare stmt: %q", err)
 	}
+	defer stmt.Close()
 
-	var cnt = 0
+	txstmt := tx.Stmt(stmt)
+	cnt := 0
+
 	for entry := range readEntries(br, pat, args.TxSize+1) {
-		_, err = stmt.Exec(entry)
+		cnt++
+		_, err = txstmt.Exec(entry)
 		if err != nil {
 			log.Fatalf("failed to insert: %q", err)
 		}
 		if cnt%args.TxSize == 0 {
-			tx.Commit()
+			// the order of Commit & Close doesn't seem to matter
+			err = tx.Commit()
+			if err != nil {
+				log.Fatalf("failed to commit tx: %q", err)
+			}
+
+			err = txstmt.Close()
+			if err != nil {
+				log.Fatalf("failed to close stmt: %q", err)
+			}
+
 
 			tx, err = db.Begin()
 			if err != nil {
-				log.Fatalf("failed to begin: %q", err)
+				log.Fatalf("failed to begin tx: %q", err)
 			}
 
-			stmt, err = tx.Prepare(`insert into logs values (?)`)
-			if err != nil {
-				log.Fatalf("failed to prepare stmt: %q", err)
-			}
+			txstmt = tx.Stmt(stmt)
 		}
 	}
 
