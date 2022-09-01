@@ -58,8 +58,7 @@ func main() {
 
 	createTable := `
 		create virtual table if not exists logs using fts5(
-			entry,
-			tokenize = "unicode61 tokenchars '-_.'"
+			entry
 		);
 	`
 
