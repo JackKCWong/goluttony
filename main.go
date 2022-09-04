@@ -19,6 +19,7 @@ type args struct {
 	TxSize          int
 	BufSize         int
 	DatetimePattern string
+	TokenChars      string
 	Profile         string
 	InFile          string
 	DbURL           string
@@ -36,6 +37,7 @@ func main() {
 	flag.IntVar(&args.TxSize, "tx", 1000, "specify size of the tx.")
 	flag.IntVar(&args.BufSize, "sz", 64, "specify max size of a line in kb.")
 	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime layout to use.")
+	flag.StringVar(&args.TokenChars, "tok", "_", "extra token chars for fts")
 	flag.StringVar(&args.Profile, "prof", "", "enable either cpu|mem profiling")
 
 	flag.Parse()
@@ -68,6 +70,7 @@ func main() {
 		);
 		create virtual table if not exists logs_fts using fts5(
 			raw,
+			tokenize="unicode61 tokenchars '%s'",
 			content="logs"
 		);
 		create trigger logs_fts_insert after insert on logs 
@@ -76,7 +79,7 @@ func main() {
 		end;
 	`
 
-	_, err = db.Exec(createTable)
+	_, err = db.Exec(fmt.Sprintf(createTable, args.TokenChars))
 	if err != nil {
 		log.Fatalf("failed to create table: %q", err)
 	}
