@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-go build --tags "json1 fts5"
+go build --tags "fts5"

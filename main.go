@@ -64,15 +64,15 @@ func main() {
 	createTable := `
 		create table if not exists logs (
 			time integer NOT NULL,
-			raw text NOT NULL,
+			raw text NOT NULL
 		);
 		create virtual table if not exists logs_fts using fts5(
-			_fts,
+			raw,
 			content="logs"
 		);
 		create trigger logs_fts_insert after insert on logs 
 		begin
-			insert into logs_fts (rowid, _fts) values (new.rowid, new.text);
+			insert into logs_fts (rowid, raw) values (new.rowid, new.raw);
 		end;
 	`
 
@@ -102,23 +102,23 @@ func main() {
 		log.Fatalf("failed to begin: %q", err)
 	}
 
-	stmt, err := db.Prepare(`insert into logs values (?)`)
+	stmt, err := db.Prepare(`insert into logs values (?, ?)`)
 	if err != nil {
 		log.Fatalf("failed to prepare stmt: %q", err)
 	}
 	defer stmt.Close()
 
 	txstmt := tx.Stmt(stmt)
+	start := time.Now()
 	cnt := 0
 
 	for entry := range readEntries(br, args.DatetimePattern, args.TxSize+1) {
 		cnt++
-		_, err = txstmt.Exec(entry)
+		_, err = txstmt.Exec(entry.Time, entry.Raw)
 		if err != nil {
 			log.Fatalf("failed to insert: %q", err)
 		}
 		if cnt%args.TxSize == 0 {
-			log.Printf("%d rows commited", cnt)
 			// the order of Commit & Close doesn't seem to matter
 			err = tx.Commit()
 			if err != nil {
@@ -140,6 +140,9 @@ func main() {
 	}
 
 	tx.Commit()
+	end := time.Now()
+	log.Printf("%d rows committed in %s", cnt, end.Sub(start))
+	log.Printf("%d rows/s", cnt/int(end.Sub(start).Seconds()))
 }
 
 func readFullLine(in *bufio.Reader) (string, error) {
