@@ -2,15 +2,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"database/sql"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"regexp"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/profile"
@@ -18,18 +17,25 @@ import (
 
 type args struct {
 	TxSize          int
+	BufSize         int
 	DatetimePattern string
 	Profile         string
 	InFile          string
-	OutFile         string
+	DbURL           string
 }
 
-const defaultDTPattern = `\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`
+const defaultDTPattern = `2006-01-02 15:04:05`
+
+type Line struct {
+	Time time.Time
+	Raw  string
+}
 
 func main() {
 	var args args
 	flag.IntVar(&args.TxSize, "tx", 1000, "specify size of the tx.")
-	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime regex pattern to use. The pattern is used to split log entries.")
+	flag.IntVar(&args.BufSize, "sz", 64, "specify max size of a line in kb.")
+	flag.StringVar(&args.DatetimePattern, "dt", defaultDTPattern, "specify datetime layout to use.")
 	flag.StringVar(&args.Profile, "prof", "", "enable either cpu|mem profiling")
 
 	flag.Parse()
@@ -46,10 +52,9 @@ func main() {
 	}
 
 	args.InFile = flag.Arg(0)
-	args.OutFile = flag.Arg(1)
+	args.DbURL = flag.Arg(1)
 
-	db, err := sql.Open("sqlite3",
-		args.OutFile+"?_journal=OFF")
+	db, err := sql.Open("sqlite3", args.DbURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %q", err)
 	}
@@ -57,9 +62,18 @@ func main() {
 	defer db.Close()
 
 	createTable := `
-		create virtual table if not exists logs using fts5(
-			entry
+		create table if not exists logs (
+			time integer NOT NULL,
+			raw text NOT NULL,
 		);
+		create virtual table if not exists logs_fts using fts5(
+			_fts,
+			content="logs"
+		);
+		create trigger logs_fts_insert after insert on logs 
+		begin
+			insert into logs_fts (rowid, _fts) values (new.rowid, new.text);
+		end;
 	`
 
 	_, err = db.Exec(createTable)
@@ -72,7 +86,7 @@ func main() {
 		log.Fatalf("failed to open input file: %q", err)
 	}
 
-	br := bufio.NewReader(infile)
+	br := bufio.NewReaderSize(infile, args.BufSize*1024)
 	r, _, err := br.ReadRune()
 	if err != nil {
 		log.Fatalf("failed to read file: %q", err)
@@ -81,11 +95,6 @@ func main() {
 	// utf8 BOM check
 	if r != '\uFEFF' {
 		br.UnreadRune()
-	}
-
-	pat, err := regexp.Compile(args.DatetimePattern)
-	if err != nil {
-		log.Fatalf("invalid datatime format: %q", err)
 	}
 
 	tx, err := db.Begin()
@@ -102,13 +111,14 @@ func main() {
 	txstmt := tx.Stmt(stmt)
 	cnt := 0
 
-	for entry := range readEntries(br, pat, args.TxSize+1) {
+	for entry := range readEntries(br, args.DatetimePattern, args.TxSize+1) {
 		cnt++
 		_, err = txstmt.Exec(entry)
 		if err != nil {
 			log.Fatalf("failed to insert: %q", err)
 		}
 		if cnt%args.TxSize == 0 {
+			log.Printf("%d rows commited", cnt)
 			// the order of Commit & Close doesn't seem to matter
 			err = tx.Commit()
 			if err != nil {
@@ -119,7 +129,6 @@ func main() {
 			if err != nil {
 				log.Fatalf("failed to close stmt: %q", err)
 			}
-
 
 			tx, err = db.Begin()
 			if err != nil {
@@ -152,106 +161,78 @@ func readFullLine(in *bufio.Reader) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		sb.WriteByte('\n')
 		sb.Write(line)
 	}
 
 	return sb.String(), nil
 }
 
-func readEntries(br *bufio.Reader, pat *regexp.Regexp, bufsize int) chan string {
-	out := make(chan string, bufsize)
+func readEntries(br *bufio.Reader, dtLayout string, bufsize int) chan Line {
+	out := make(chan Line, bufsize)
 	go func() {
 		defer close(out)
 		var entry strings.Builder
+		var line1 string
+		var lineN string
+		var ioErr error
 
-		line, err := readFullLine(br)
-		if line == "" {
-			if err != io.EOF {
-				log.Fatal(err)
-			}
-		}
-
-		entry.WriteString(line)
-
-	outer:
+		line1, ioErr = readFullLine(br)
 		for {
-			loc := pat.FindStringIndex(entry.String())
-			if loc == nil || loc[0] != 0 {
-				log.Fatalf("unexpected starting line: %s", entry.String())
+			if len(line1) > 0 {
+				dt, parseErr := parseTimestamp(dtLayout, line1)
+				if parseErr != nil {
+					log.Fatalf("unexpected starting of line: %s", line1)
+				}
+
+				entry.Reset()
+				entry.WriteString(line1)
+
+				for {
+					lineN, ioErr = readFullLine(br)
+					if len(lineN) > 0 {
+						_, parseErr = parseTimestamp(dtLayout, lineN)
+						if parseErr != nil {
+							entry.WriteByte('\n')
+							entry.WriteString(lineN)
+						} else {
+							line1 = lineN
+							break
+						}
+					} else {
+						if ioErr == io.EOF {
+							break
+						}
+
+						if ioErr != nil {
+							log.Fatalf("failed to read next line: %q", ioErr)
+						}
+					}
+				}
+
+				out <- Line{
+					Time: dt,
+					Raw:  entry.String(),
+				}
 			}
 
-			for {
-				line, err = readFullLine(br)
-				if err == io.EOF {
-					out <- entry.String()
-					break outer
-				}
+			if ioErr == io.EOF {
+				break
+			}
 
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				loc = pat.FindStringIndex(line)
-				if loc == nil || loc[0] != 0 {
-					entry.WriteByte('\n')
-					entry.WriteString(line)
-				} else {
-					// a new entry start
-					out <- entry.String()
-					entry.Reset()
-					entry.WriteString(line)
-					break
-				}
+			if ioErr != nil {
+				log.Fatalf("failed to read line: %q", ioErr)
 			}
 		}
-
 	}()
 
 	return out
 }
 
-func logEntrySplitter(dtPattern *regexp.Regexp) bufio.SplitFunc {
-	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		loc := dtPattern.FindIndex(data)
-		if loc == nil {
-			if atEOF {
-				return 0, nil, fmt.Errorf("unexpected EOF: buffer=%s", data)
-			}
-
-			log.Printf("read more 1: %d", len(data))
-			return 0, nil, nil
-		}
-
-		// assumes data always start with a dtPattern
-		if loc[0] == 0 {
-			if atEOF {
-				// last line
-				return len(data), bytes.TrimRight(data, "\n"), nil
-			}
-
-			// first line
-			loc = dtPattern.FindIndex(data[1:]) // find next entry start
-			if loc == nil {
-				log.Printf("read more 2: %d", len(data))
-				return 0, nil, nil
-			}
-
-			// fix offset by 1 above
-			loc[0] += 1
-			loc[1] += 1
-
-			if data[loc[0]-1] == '\n' {
-				// a good match
-				return loc[0],
-					data[0 : loc[0]-1], // don't return \n at the end
-					nil
-			} else {
-				log.Printf("read more 3: %d", len(data))
-				return 0, nil, nil
-			}
-		} else {
-			// read more
-			return 0, nil, fmt.Errorf("unexpected start of entry: %s,%v", data, loc)
-		}
+func parseTimestamp(layout, line string) (time.Time, error) {
+	if len(line) > len(layout) {
+		return time.Parse(layout, line[0:len(layout)])
 	}
+
+	return time.Time{}, fmt.Errorf("input shorter than layout: %s", line)
 }
