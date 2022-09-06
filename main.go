@@ -68,6 +68,7 @@ func main() {
 			time integer NOT NULL,
 			raw text NOT NULL
 		);
+		create index time_idx on logs(time); 
 		create virtual table if not exists logs_fts using fts5(
 			raw,
 			tokenize="unicode61 tokenchars '%s'",
